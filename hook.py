@@ -121,9 +121,14 @@ def determine_status(event: dict) -> tuple[str, str]:
     # Notification events
     if hook_type == "Notification":
         notification_type = event.get("notification_type", "")
-        if notification_type in ("permission_prompt", "idle_prompt", "elicitation_dialog"):
-            return "waiting_input", "Waiting for input"
-        return "running", "Processing"
+        # Only mark as waiting_input for prompts that actually need user action
+        if notification_type == "permission_prompt":
+            return "waiting_input", "Waiting for permission"
+        elif notification_type == "elicitation_dialog":
+            return "waiting_input", "Waiting for MCP input"
+        # idle_prompt means agent is done - don't change status, let Stop hook handle it
+        # Other notifications are informational
+        return None, None  # Don't update status for idle_prompt or other notifications
 
     # Tool use events
     if hook_type == "PreToolUse":
@@ -182,9 +187,13 @@ def main():
     # Determine status
     status, summary = determine_status(event)
 
-    # Handle SessionEnd (clear status)
+    # Handle SessionEnd or no-op notifications (clear status or do nothing)
     if status is None:
-        clear_status(session_id, cwd)
+        # Check if this is SessionEnd (should clear) or just a no-op notification (skip)
+        hook_type = event.get("hook_event_name", "")
+        if hook_type == "SessionEnd":
+            clear_status(session_id, cwd)
+        # For other None returns (like idle_prompt), do nothing - preserve existing status
     else:
         # Write status file
         write_status(session_id, status, summary, cwd)

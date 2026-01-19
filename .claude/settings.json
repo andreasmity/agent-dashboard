@@ -11,6 +11,17 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python C:/Users/damonp/OneDrive/MIT-time/agent-monitor/hook.py"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "matcher": "",

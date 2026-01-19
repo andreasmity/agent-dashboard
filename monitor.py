@@ -20,6 +20,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from threading import Thread, Event
 
 from rich.console import Console, Group
 from rich.live import Live
@@ -31,6 +32,29 @@ from rich.box import ROUNDED, HEAVY, DOUBLE, MINIMAL, SIMPLE
 
 # Default status directory
 DEFAULT_STATUS_DIR = Path.home() / ".agent-monitor" / "status"
+
+# Cross-platform keyboard input
+def get_key_non_blocking():
+    """Get keyboard input without blocking. Returns None if no key pressed."""
+    if sys.platform == 'win32':
+        import msvcrt
+        if msvcrt.kbhit():
+            return msvcrt.getch().decode('utf-8', errors='ignore')
+    else:
+        import select
+        import termios
+        import tty
+
+        # Check if stdin has data available
+        if select.select([sys.stdin], [], [], 0)[0]:
+            old_settings = termios.tcgetattr(sys.stdin)
+            try:
+                tty.setraw(sys.stdin.fileno())
+                key = sys.stdin.read(1)
+                return key
+            finally:
+                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+    return None
 
 # Nerd Font icons (CascadiaCode Nerd Font / oh-my-posh compatible)
 ICONS = {
@@ -326,8 +350,12 @@ def build_dashboard(repos: dict[str, list[dict]], status_dir: Path) -> Panel:
     if total_agents > 0:
         subtitle_parts.append(f"{total_agents} total")
     
-    subtitle = Text(" | ".join(subtitle_parts) if subtitle_parts else "", style=COLORS["muted"])
-    
+    subtitle_text = " | ".join(subtitle_parts) if subtitle_parts else ""
+    if subtitle_text:
+        subtitle_text += " | "
+    subtitle_text += "Press 'q' to quit"
+    subtitle = Text(subtitle_text, style=COLORS["muted"])
+
     return Panel(
         Group(*content_parts),
         title=title,
@@ -343,7 +371,7 @@ def build_dashboard(repos: dict[str, list[dict]], status_dir: Path) -> Panel:
 def run_dashboard(status_dir: Path, refresh_rate: float = 1.0):
     """Run the live dashboard."""
     console = Console()
-    
+
     try:
         with Live(
             build_dashboard(get_all_agents(status_dir), status_dir),
@@ -352,10 +380,17 @@ def run_dashboard(status_dir: Path, refresh_rate: float = 1.0):
             screen=True,
         ) as live:
             while True:
+                # Check for 'q' key press
+                key = get_key_non_blocking()
+                if key and key.lower() == 'q':
+                    break
+
                 repos = get_all_agents(status_dir)
                 live.update(build_dashboard(repos, status_dir))
                 time.sleep(refresh_rate)
     except KeyboardInterrupt:
+        pass
+    finally:
         console.print("\n[dim]Monitor stopped.[/dim]")
 
 
