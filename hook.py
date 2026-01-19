@@ -7,17 +7,23 @@ This script is called by Claude Code hooks and parses the JSON event from stdin.
 Usage in ~/.claude/settings.json (global hooks):
     {
       "hooks": {
-        "NotificationHook": [
+        "Notification": [
           {
             "matcher": "",
-            "command": "python /path/to/agent-monitor/hook.py"
+            "hooks": [
+              {
+                "type": "command",
+                "command": "python /path/to/agent-monitor/hook.py"
+              }
+            ]
           }
         ],
-        "PreToolUseHook": [...],
-        "PostToolUseHook": [...],
-        "StopHook": [...]
+        "PreToolUse": [...],
+        "Stop": [...]
       }
     }
+
+Or use the /hooks command in Claude Code to configure interactively.
 
 The hook auto-detects:
   - repo: from git remote origin or directory name
@@ -312,16 +318,17 @@ def main():
         return
     
     # Determine hook type from event structure
-    hook_type = event.get("hook_type", "")
+    # Claude Code uses hook_event_name field
+    hook_type = event.get("hook_event_name", "") or event.get("hook_type", "")
     
-    # Route to appropriate handler
-    if hook_type == "NotificationHook" or "content" in event:
+    # Route to appropriate handler based on hook type or event structure
+    if hook_type == "Notification" or "content" in event:
         handle_notification_hook(event, repo, worktree)
-    elif hook_type == "PreToolUseHook" or ("tool_name" in event and "tool_input" in event):
+    elif hook_type == "PreToolUse" or ("tool_name" in event and "tool_input" in event and "tool_result" not in event):
         handle_pre_tool_use(event, repo, worktree)
-    elif hook_type == "PostToolUseHook" or ("tool_name" in event and "tool_result" in event):
+    elif hook_type == "PostToolUse" or ("tool_name" in event and "tool_result" in event):
         handle_post_tool_use(event, repo, worktree)
-    elif hook_type == "StopHook" or "reason" in event:
+    elif hook_type == "Stop" or "stop_hook_reason" in event or event.get("reason"):
         handle_stop_hook(event, repo, worktree)
     else:
         # Unknown event type - just report running

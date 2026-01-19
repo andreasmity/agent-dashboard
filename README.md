@@ -57,29 +57,48 @@ Add hooks to your **global** Claude settings at `~/.claude/settings.json`:
 ```json
 {
   "hooks": {
-    "NotificationHook": [
+    "Notification": [
       {
         "matcher": "",
-        "command": "python /path/to/agent-monitor/hook.py"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python /path/to/agent-monitor/hook.py"
+          }
+        ]
       }
     ],
-    "PreToolUseHook": [
+    "PreToolUse": [
       {
         "matcher": "",
-        "command": "python /path/to/agent-monitor/hook.py"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python /path/to/agent-monitor/hook.py"
+          }
+        ]
       }
     ],
-    "StopHook": [
+    "Stop": [
       {
         "matcher": "",
-        "command": "python /path/to/agent-monitor/hook.py"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python /path/to/agent-monitor/hook.py"
+          }
+        ]
       }
     ]
   }
 }
 ```
 
-**Note:** Replace `/path/to/agent-monitor` with your actual installation path.
+**Important notes:**
+- Replace `/path/to/agent-monitor` with your actual installation path
+- On Windows, use forward slashes or escaped backslashes in the path
+- The hook names are `Notification`, `PreToolUse`, `Stop` (not `NotificationHook`, etc.)
+- Use the `/hooks` command in Claude Code to configure hooks interactively (recommended)
 
 ### Auto-Detection
 
