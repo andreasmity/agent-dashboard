@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python C:/Users/damonp/OneDrive/MIT-time/agent-monitor/hook.py"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python C:/Users/damonp/OneDrive/MIT-time/agent-monitor/hook.py"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python C:/Users/damonp/OneDrive/MIT-time/agent-monitor/hook.py"
+          }
+        ]
+      }
+    ]
+  }
+}

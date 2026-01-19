@@ -1,271 +1,195 @@
 #!/usr/bin/env python3
 """
-Claude Code Hook Handler - Parses hook events and updates agent monitor status.
+Claude Code Hook Handler - Fast, lightweight status updater.
 
-This script is called by Claude Code hooks and receives JSON via stdin.
+This script reads JSON from stdin and writes status to ~/.agent-monitor/status/
+Reads repo/worktree identity from .claude/agent-monitor/config.json for speed.
 
 Claude Code Hook Input (via stdin):
     {
         "session_id": "...",
-        "transcript_path": "...",
         "cwd": "/current/working/directory",
-        "permission_mode": "...",
         "hook_event_name": "PreToolUse" | "PostToolUse" | "Notification" | "Stop" | etc,
-        "tool_name": "...",        // for tool-related hooks
-        "tool_input": {...},       // for PreToolUse/PostToolUse
-        "tool_response": {...},    // for PostToolUse only
-        "prompt": "...",           // for UserPromptSubmit
-        "message": "...",          // for Notification
-        "notification_type": "...", // for Notification
+        "tool_name": "...",
+        "notification_type": "...",
         ...
     }
 
-Environment variables available:
-    CLAUDE_PROJECT_DIR - Project root directory (absolute path)
+Environment variables:
+    CLAUDE_PROJECT_DIR - Project root directory (provided by Claude Code)
 
-Usage in ~/.claude/settings.json:
+Config file (.claude/agent-monitor/config.json):
     {
-      "hooks": {
-        "Notification": [
-          {
-            "matcher": "",
-            "hooks": [{ "type": "command", "command": "python /path/to/hook.py" }]
-          }
-        ],
-        "PreToolUse": [
-          {
-            "matcher": "",
-            "hooks": [{ "type": "command", "command": "python /path/to/hook.py" }]
-          }
-        ],
-        "Stop": [
-          {
-            "matcher": "",
-            "hooks": [{ "type": "command", "command": "python /path/to/hook.py" }]
-          }
-        ]
-      }
+        "repo": "my-repo",
+        "worktree": "feature-branch"
     }
-
-Or use the /hooks command in Claude Code to configure interactively.
 """
 
 import json
 import os
-import re
-import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Tuple
 
-# Import from report.py (same directory)
-sys.path.insert(0, str(Path(__file__).parent))
-from report import report_status, clear_status
+# Status directory: ~/.agent-monitor/status/
+STATUS_DIR = Path.home() / ".agent-monitor" / "status"
 
 
-def get_repo_name_from_git(cwd: str) -> Optional[str]:
+def read_identity_config(project_dir: str) -> tuple[str, str]:
     """
-    Get repo name from git remote origin URL.
-    """
-    try:
-        # Get repo name from remote origin URL
-        result = subprocess.run(
-            ["git", "config", "--get", "remote.origin.url"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            cwd=cwd,
-        )
-        if result.returncode == 0:
-            url = result.stdout.strip()
-            # Extract repo name from URL formats:
-            # https://github.com/user/repo.git -> repo
-            # git@github.com:user/repo.git -> repo
-            match = re.search(r'[/:]([^/:]+?)(?:\.git)?$', url)
-            if match:
-                return match.group(1)
-        
-        # Fallback: use git root directory name
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            cwd=cwd,
-        )
-        if result.returncode == 0:
-            return Path(result.stdout.strip()).name
-            
-    except Exception:
-        pass
-    
-    return None
+    Read repo and worktree identity from .claude/agent-monitor/config.json
 
-
-def get_worktree_name_from_git(cwd: str) -> Optional[str]:
-    """
-    Get worktree name from git toplevel directory.
+    Returns: (repo, worktree)
+    Falls back to session-based if config doesn't exist.
     """
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            cwd=cwd,
-        )
-        if result.returncode == 0:
-            return Path(result.stdout.strip()).name
+        config_path = Path(project_dir) / ".claude" / "agent-monitor" / "config.json"
+        if config_path.exists():
+            with open(config_path, "r") as f:
+                config = json.load(f)
+                repo = config.get("repo", "unknown")
+                worktree = config.get("worktree", "unknown")
+                return repo, worktree
     except Exception:
         pass
-    
-    return Path(cwd).name
+
+    # Fallback: derive from directory name
+    try:
+        worktree = Path(project_dir).name
+        return "unknown", worktree
+    except Exception:
+        return "unknown", "unknown"
 
 
-def get_identity_from_event(event: dict) -> Tuple[str, str]:
+def write_status(session_id: str, status: str, summary: str, cwd: str = "") -> None:
     """
-    Extract repo and worktree identity from the hook event.
-    
-    Uses cwd from event JSON and CLAUDE_PROJECT_DIR env var,
-    then runs git commands to get repo/worktree names.
+    Write status file to ~/.agent-monitor/status/<repo>/<worktree>.json
+
+    Reads identity from config file for speed.
     """
-    cwd = event.get("cwd", os.getcwd())
+    # Get project directory from environment
     project_dir = os.environ.get("CLAUDE_PROJECT_DIR", cwd)
-    
-    # Get repo name from git
-    repo = get_repo_name_from_git(project_dir) or Path(project_dir).name or "_default"
-    
-    # Get worktree name from git
-    worktree = get_worktree_name_from_git(cwd) or Path(cwd).name or "_default"
-    
-    return repo, worktree
 
+    # Read repo and worktree from config
+    repo, worktree = read_identity_config(project_dir)
 
-def handle_notification(event: dict, repo: str, worktree: str, cwd: str) -> None:
-    """Handle Notification hook."""
-    notification_type = event.get("notification_type", "")
-    message = event.get("message", "")
-    
-    # Determine status based on notification_type (the reliable indicator)
-    if notification_type == "permission_prompt":
-        status = "waiting_input"
-        summary = "Waiting for permission"
-    elif notification_type == "idle_prompt":
-        status = "waiting_input"
-        summary = "Waiting for input"
-    elif notification_type == "elicitation_dialog":
-        status = "waiting_input"
-        summary = "Waiting for MCP input"
-    else:
-        # Other notifications - agent is running
-        status = "running"
-        summary = f"Notification: {notification_type}" if notification_type else "Processing"
-    
-    report_status(worktree=worktree, status=status, summary=summary, repo=repo, path=cwd)
+    # Create repo subdirectory
+    repo_dir = STATUS_DIR / repo
+    repo_dir.mkdir(parents=True, exist_ok=True)
 
+    # Write to <repo>/<worktree>.json
+    status_file = repo_dir / f"{worktree}.json"
 
-def handle_pre_tool_use(event: dict, repo: str, worktree: str, cwd: str) -> None:
-    """Handle PreToolUse hook."""
-    tool_name = event.get("tool_name", "unknown")
-    tool_input = event.get("tool_input", {})
-    
-    # Build summary from tool name and input
-    summary = f"Using {tool_name}"
-    
-    if isinstance(tool_input, dict):
-        if "command" in tool_input:
-            cmd = str(tool_input["command"])[:40]
-            summary = f"Running: {cmd}"
-        elif "file_path" in tool_input:
-            path = Path(str(tool_input["file_path"])).name
-            summary = f"{tool_name}: {path}"
-        elif "pattern" in tool_input:
-            pattern = str(tool_input["pattern"])[:30]
-            summary = f"{tool_name}: {pattern}"
-    
-    report_status(worktree=worktree, status="running", summary=summary, repo=repo, path=cwd)
-
-
-def handle_post_tool_use(event: dict, repo: str, worktree: str, cwd: str) -> None:
-    """Handle PostToolUse hook."""
-    tool_name = event.get("tool_name", "unknown")
-    tool_response = event.get("tool_response", {})
-    
-    # Check for errors
-    if isinstance(tool_response, dict):
-        if tool_response.get("error") or tool_response.get("success") is False:
-            error_msg = tool_response.get("error", "Failed")
-            report_status(
-                worktree=worktree,
-                status="error",
-                summary=f"{tool_name}: {str(error_msg)[:60]}",
-                repo=repo,
-                path=cwd,
-            )
-            return
-    
-    report_status(worktree=worktree, status="running", summary=f"Completed {tool_name}", repo=repo, path=cwd)
-
-
-def handle_stop(event: dict, repo: str, worktree: str, cwd: str) -> None:
-    """Handle Stop/SubagentStop hook - Claude finished responding."""
-    report_status(worktree=worktree, status="idle", summary="Task completed", repo=repo, path=cwd)
-
-
-def handle_user_prompt_submit(event: dict, repo: str, worktree: str, cwd: str) -> None:
-    """Handle UserPromptSubmit hook."""
-    prompt = event.get("prompt", "")
-    summary = f"Processing: {prompt[:50]}..." if len(prompt) > 50 else f"Processing: {prompt}" if prompt else "Processing prompt"
-    report_status(worktree=worktree, status="running", summary=summary, repo=repo, path=cwd)
-
-
-def handle_session_start(event: dict, repo: str, worktree: str, cwd: str) -> None:
-    """Handle SessionStart hook."""
-    source = event.get("source", "startup")
-    summary_map = {
-        "startup": "Session started",
-        "resume": "Session resumed", 
-        "clear": "Session cleared",
-        "compact": "Context compacted",
+    # Write status JSON with all required fields
+    data = {
+        "session_id": session_id,
+        "repo": repo,
+        "worktree": worktree,
+        "status": status,
+        "summary": summary,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "path": cwd,
     }
-    report_status(worktree=worktree, status="running", summary=summary_map.get(source, "Session active"), repo=repo, path=cwd)
+
+    # Atomic write: write to temp file then rename
+    temp_file = status_file.with_suffix(".tmp")
+    with open(temp_file, "w") as f:
+        json.dump(data, f)
+    temp_file.replace(status_file)
 
 
-def handle_session_end(event: dict, repo: str, worktree: str, cwd: str) -> None:
-    """Handle SessionEnd hook - clear status since session ended."""
-    clear_status(worktree, repo)
+def clear_status(session_id: str, cwd: str = "") -> None:
+    """Remove status file for session."""
+    project_dir = os.environ.get("CLAUDE_PROJECT_DIR", cwd)
+    repo, worktree = read_identity_config(project_dir)
+
+    repo_dir = STATUS_DIR / repo
+    status_file = repo_dir / f"{worktree}.json"
+
+    if status_file.exists():
+        status_file.unlink()
+
+
+def determine_status(event: dict) -> tuple[str, str]:
+    """
+    Determine status and summary from hook event.
+
+    Returns: (status, summary)
+    """
+    hook_type = event.get("hook_event_name", "")
+
+    # Notification events
+    if hook_type == "Notification":
+        notification_type = event.get("notification_type", "")
+        if notification_type in ("permission_prompt", "idle_prompt", "elicitation_dialog"):
+            return "waiting_input", "Waiting for input"
+        return "running", "Processing"
+
+    # Tool use events
+    if hook_type == "PreToolUse":
+        tool_name = event.get("tool_name", "tool")
+        return "running", f"Using {tool_name}"
+
+    if hook_type == "PostToolUse":
+        tool_name = event.get("tool_name", "tool")
+        tool_response = event.get("tool_response", {})
+        if isinstance(tool_response, dict) and (tool_response.get("error") or tool_response.get("success") is False):
+            return "error", f"{tool_name} failed"
+        return "running", f"Completed {tool_name}"
+
+    # Stop events
+    if hook_type in ("Stop", "SubagentStop"):
+        return "idle", "Task completed"
+
+    # Session events
+    if hook_type == "SessionStart":
+        return "running", "Session started"
+
+    if hook_type == "SessionEnd":
+        return None, None  # Signal to clear
+
+    if hook_type == "UserPromptSubmit":
+        prompt = event.get("prompt", "")
+        if prompt:
+            summary = prompt[:50] + "..." if len(prompt) > 50 else prompt
+        else:
+            summary = "Processing prompt"
+        return "running", summary
+
+    # Default
+    return "running", "Active"
 
 
 def main():
-    """Main entry point - reads hook event from stdin and routes to handler."""
+    """Main entry point - reads JSON from stdin and writes status file."""
     try:
-        raw_input = sys.stdin.read()
-        if not raw_input.strip():
-            sys.exit(0)
-        event = json.loads(raw_input)
-    except json.JSONDecodeError as e:
-        print(f"Warning: Invalid JSON: {e}", file=sys.stderr)
+        # Read JSON from stdin
+        event = json.load(sys.stdin)
+    except (json.JSONDecodeError, EOFError, ValueError):
+        # Invalid or empty JSON - exit silently
         sys.exit(0)
-    
-    repo, worktree = get_identity_from_event(event)
-    cwd = event.get("cwd", os.getcwd())
-    hook_type = event.get("hook_event_name", "")
-    
-    handlers = {
-        "Notification": handle_notification,
-        "PreToolUse": handle_pre_tool_use,
-        "PostToolUse": handle_post_tool_use,
-        "Stop": handle_stop,
-        "SubagentStop": handle_stop,
-        "UserPromptSubmit": handle_user_prompt_submit,
-        "SessionStart": handle_session_start,
-        "SessionEnd": handle_session_end,
-    }
-    
-    handler = handlers.get(hook_type)
-    if handler:
-        handler(event, repo, worktree, cwd)
-    
+    except Exception:
+        # Any other error - exit silently
+        sys.exit(0)
+
+    # Get session_id and cwd
+    session_id = event.get("session_id", "")
+    if not session_id:
+        sys.exit(0)
+
+    cwd = event.get("cwd", "")
+
+    # Determine status
+    status, summary = determine_status(event)
+
+    # Handle SessionEnd (clear status)
+    if status is None:
+        clear_status(session_id, cwd)
+    else:
+        # Write status file
+        write_status(session_id, status, summary, cwd)
+
+    # Exit immediately
     sys.exit(0)
 
 

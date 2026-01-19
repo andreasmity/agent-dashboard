@@ -66,11 +66,10 @@ Claude Code hooks receive a JSON payload via **stdin** containing event informat
 ```
 
 The hook script uses:
-- **`cwd`** from the JSON to determine the current working directory
-- **`CLAUDE_PROJECT_DIR`** environment variable for the project root
-- **Git commands** to extract repo name (from `remote.origin.url`) and worktree name
+- **`CLAUDE_PROJECT_DIR`** environment variable (provided by Claude Code) for the project root
+- **`.claude/agent-monitor/config.json`** to read repo/worktree identity (fast, no git operations)
 
-This means **no manual configuration is needed** - the hook automatically detects which repo and worktree it's running in.
+Each worktree needs a simple config file to identify itself.
 
 ### Setting Up Global Hooks
 
@@ -144,30 +143,48 @@ Add hooks to your **global** Claude settings at `~/.claude/settings.json`:
 | `SessionStart` | New session begins | Mark as running |
 | `SessionEnd` | Session ends | Clear status file |
 
-### How Repo/Worktree Detection Works
+### Configuring Worktree Identity
 
-The hook automatically determines identity by:
+Each worktree needs a simple config file at `.claude/agent-monitor/config.json`:
 
-1. **Repo name**: Extracted from `git config --get remote.origin.url`
-   - `https://github.com/user/myrepo.git` → `myrepo`
-   - `git@github.com:user/myrepo.git` → `myrepo`
-   - Falls back to project directory name
+```json
+{
+  "repo": "myrepo",
+  "worktree": "feature-auth"
+}
+```
 
-2. **Worktree name**: From `git rev-parse --show-toplevel`
-   - For worktrees: `/path/to/myrepo-feature-auth` → `myrepo-feature-auth`
-   - For main repo: `/path/to/myrepo` → `myrepo`
+**Setup for each worktree:**
 
-This means if you have:
+```bash
+# In your worktree directory
+mkdir -p .claude/agent-monitor
+cat > .claude/agent-monitor/config.json << EOF
+{
+  "repo": "myrepo",
+  "worktree": "$(basename $(pwd))"
+}
+EOF
+```
+
+**Why config files?**
+- Lightning fast (single file read, no git commands)
+- Works in any directory (git or non-git)
+- Full control over display names
+- No subprocess overhead
+
+**Example structure:**
 ```
 ~/projects/
-├── myrepo/                    # main worktree
-├── myrepo-feature-auth/       # git worktree for feature-auth branch
-└── myrepo-bugfix-api/         # git worktree for bugfix-api branch
+├── myrepo/                               # main worktree
+│   └── .claude/agent-monitor/config.json   {"repo": "myrepo", "worktree": "master"}
+├── myrepo-feature-auth/                  # git worktree
+│   └── .claude/agent-monitor/config.json   {"repo": "myrepo", "worktree": "feature-auth"}
+└── myrepo-bugfix-api/                    # git worktree
+    └── .claude/agent-monitor/config.json   {"repo": "myrepo", "worktree": "bugfix-api"}
 ```
 
-Each will be detected as:
-- Repo: `myrepo` (from git remote)
-- Worktree: `myrepo`, `myrepo-feature-auth`, `myrepo-bugfix-api` (from directory names)
+Each will appear in the dashboard grouped by repo name.
 
 ## Status Directory Structure
 
