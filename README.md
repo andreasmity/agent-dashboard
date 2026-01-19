@@ -50,6 +50,28 @@ python demo.py
 
 ## Claude Code Integration
 
+### How It Works
+
+Claude Code hooks receive a JSON payload via **stdin** containing event information. The key fields are:
+
+```json
+{
+  "session_id": "abc123",
+  "transcript_path": "/path/to/transcript.jsonl",
+  "cwd": "/current/working/directory",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Write",
+  "tool_input": { "file_path": "..." }
+}
+```
+
+The hook script uses:
+- **`cwd`** from the JSON to determine the current working directory
+- **`CLAUDE_PROJECT_DIR`** environment variable for the project root
+- **Git commands** to extract repo name (from `remote.origin.url`) and worktree name
+
+This means **no manual configuration is needed** - the hook automatically detects which repo and worktree it's running in.
+
 ### Setting Up Global Hooks
 
 Add hooks to your **global** Claude settings at `~/.claude/settings.json`:
@@ -63,7 +85,7 @@ Add hooks to your **global** Claude settings at `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "python /path/to/agent-monitor/hook.py"
+            "command": "python C:/path/to/agent-monitor/hook.py"
           }
         ]
       }
@@ -74,7 +96,7 @@ Add hooks to your **global** Claude settings at `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "python /path/to/agent-monitor/hook.py"
+            "command": "python C:/path/to/agent-monitor/hook.py"
           }
         ]
       }
@@ -85,7 +107,18 @@ Add hooks to your **global** Claude settings at `~/.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "python /path/to/agent-monitor/hook.py"
+            "command": "python C:/path/to/agent-monitor/hook.py"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python C:/path/to/agent-monitor/hook.py"
           }
         ]
       }
@@ -95,46 +128,46 @@ Add hooks to your **global** Claude settings at `~/.claude/settings.json`:
 ```
 
 **Important notes:**
-- Replace `/path/to/agent-monitor` with your actual installation path
-- On Windows, use forward slashes or escaped backslashes in the path
-- The hook names are `Notification`, `PreToolUse`, `Stop` (not `NotificationHook`, etc.)
+- Replace the path with your actual installation path
+- On Windows, use forward slashes or escaped backslashes
+- The hook names are `Notification`, `PreToolUse`, `PostToolUse`, `Stop`, `SessionStart`, `SessionEnd`
 - Use the `/hooks` command in Claude Code to configure hooks interactively (recommended)
 
-### Auto-Detection
+### Available Hook Events
 
-The hook automatically detects:
-- **Repo name**: From `git remote origin` URL, falling back to git root directory name
-- **Worktree name**: From the current directory name (which typically includes the branch for worktrees)
+| Event | When it fires | What we do |
+|-------|---------------|------------|
+| `Notification` | Claude sends a notification (permission prompt, idle) | Detect waiting status |
+| `PreToolUse` | Before Claude uses a tool | Show what tool is running |
+| `PostToolUse` | After tool completes | Update status, detect errors |
+| `Stop` | Claude finishes responding | Mark as idle |
+| `SessionStart` | New session begins | Mark as running |
+| `SessionEnd` | Session ends | Clear status file |
 
-You can override with environment variables:
-- `AGENT_REPO`: Override repo name
-- `AGENT_WORKTREE`: Override worktree name
+### How Repo/Worktree Detection Works
 
-### Global Instructions for Agents
+The hook automatically determines identity by:
 
-Claude Code supports a **global CLAUDE.md** file that applies to all projects. Copy the agent instructions there:
+1. **Repo name**: Extracted from `git config --get remote.origin.url`
+   - `https://github.com/user/myrepo.git` → `myrepo`
+   - `git@github.com:user/myrepo.git` → `myrepo`
+   - Falls back to project directory name
 
-```bash
-# Copy to global location (applies to ALL projects)
-cp /path/to/agent-monitor/CLAUDE.md ~/.claude/CLAUDE.md
+2. **Worktree name**: From `git rev-parse --show-toplevel`
+   - For worktrees: `/path/to/myrepo-feature-auth` → `myrepo-feature-auth`
+   - For main repo: `/path/to/myrepo` → `myrepo`
 
-# Or append if you already have a global CLAUDE.md
-cat /path/to/agent-monitor/CLAUDE.md >> ~/.claude/CLAUDE.md
+This means if you have:
+```
+~/projects/
+├── myrepo/                    # main worktree
+├── myrepo-feature-auth/       # git worktree for feature-auth branch
+└── myrepo-bugfix-api/         # git worktree for bugfix-api branch
 ```
 
-This teaches all Claude Code agents to use explicit status tags:
-
-```
-[STATUS: Waiting for decision on authentication approach]
-
-I've analyzed two options:
-1. OAuth 2.0 - better for external integrations  
-2. JWT - simpler implementation
-
-Which would you prefer?
-```
-
-The monitor extracts `[STATUS: ...]` tags for the summary column, and also auto-detects questions and tool usage.
+Each will be detected as:
+- Repo: `myrepo` (from git remote)
+- Worktree: `myrepo`, `myrepo-feature-auth`, `myrepo-bugfix-api` (from directory names)
 
 ## Status Directory Structure
 
@@ -221,8 +254,6 @@ clear_status("feature-auth", repo="webapp")
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `AGENT_MONITOR_DIR` | Status file directory | `~/.agent-monitor/status` |
-| `AGENT_REPO` | Override repo name | auto-detected |
-| `AGENT_WORKTREE` | Override worktree name | auto-detected |
 
 ### Status File Format
 
@@ -231,7 +262,7 @@ clear_status("feature-auth", repo="webapp")
   "repo": "webapp",
   "worktree": "feature-auth",
   "status": "waiting_input",
-  "summary": "Should I use OAuth or JWT?",
+  "summary": "Waiting for permission",
   "path": "/home/user/webapp-feature-auth",
   "updated_at": "2025-01-18T13:21:00+00:00"
 }
@@ -245,7 +276,6 @@ agent-monitor/
 ├── report.py       # CLI status reporter
 ├── hook.py         # Claude Code hook handler
 ├── demo.py         # Generate test data
-├── CLAUDE.md       # Instructions for Claude agents (copy to ~/.claude/)
 ├── FUTURE.md       # Roadmap (Rust rewrite)
 └── src/agent_monitor/  # Installable package
 ```
